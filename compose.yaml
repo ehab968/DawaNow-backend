@@ -11,7 +11,7 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpass}"]
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-rootpass}" ]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -27,9 +27,10 @@ services:
       DB_PASSWORD: ${MYSQL_PASSWORD:-dawanow}
       JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
       PRODUCT_IMPORT_ENABLED: "true"
-#      JWT_SECRET: ${JWT_SECRET:-change-this-before-production}
-#      JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-60}
-#      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      SBG_API_KEY: ${SBG_API_KEY}
+    #      JWT_SECRET: ${JWT_SECRET:-change-this-before-production}
+    #      JWT_EXPIRATION_MINUTES: ${JWT_EXPIRATION_MINUTES:-60}
+    #      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
       - "${APP_PORT:-8080}:8080"
     depends_on:
