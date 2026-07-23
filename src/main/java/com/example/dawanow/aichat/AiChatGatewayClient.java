@@ -22,7 +22,7 @@ import org.springframework.web.client.RestClientResponseException;
 public class AiChatGatewayClient {
 
     private static final int MAX_TOKENS = 900;
-    private static final int CLASSIFIER_MAX_TOKENS = 120;
+    private static final int CLASSIFIER_MAX_TOKENS = 300;
 
     private final AiChatProperties properties;
     private final ObjectMapper objectMapper;
@@ -140,7 +140,7 @@ public class AiChatGatewayClient {
                     .uri(url)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + properties.apiKey())
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(request)
+                    .body(request.toString())
                     .retrieve()
                     .body(String.class);
             return extractOutput(responseBody);

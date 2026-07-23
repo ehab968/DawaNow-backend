@@ -21,11 +21,11 @@ public class AiChatProperties {
     public AiChatProperties(
             @Value("${SBG_API_KEY:}") String apiKey,
             @Value("${AI_CHAT_GATEWAY_BASE_URL:http://apiaccess.iti.net.eg/api/v1}") String gatewayBaseUrl,
-            @Value("${AI_CHAT_MODEL_HAIKU:anthropic.claude-haiku-4-5-20251001-v1:0}") String haikuModel,
+            @Value("${AI_CHAT_MODEL_HAIKU:us.meta.llama3-3-70b-instruct-v1:0}") String haikuModel,
             @Value("${AI_CHAT_MODEL_COMPLEX:openai.gpt-oss-20b-1:0}") String complexModel,
             @Value("${AI_CHAT_MODEL_VISION:qwen.qwen3-vl-235b-a22b}") String visionModel,
             @Value("${AI_CHAT_MODEL_SAFEGUARD:openai.gpt-oss-safeguard-20b}") String safeguardModel,
-            @Value("${AI_CHAT_SAFETY_ENABLED:false}") boolean safetyEnabled,
+            @Value("${AI_CHAT_SAFETY_ENABLED:true}") boolean safetyEnabled,
             @Value("${AI_MEDICAL_PROTOTYPE_ENABLED:false}") boolean medicalPrototypeEnabled,
             @Value("${AI_CHAT_CONNECT_TIMEOUT_MS:5000}") int connectTimeoutMs,
             @Value("${AI_CHAT_READ_TIMEOUT_MS:60000}") int readTimeoutMs
