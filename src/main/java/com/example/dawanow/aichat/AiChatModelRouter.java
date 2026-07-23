@@ -70,7 +70,9 @@ public class AiChatModelRouter {
             return AiChatIntent.PRODUCT_INFORMATION;
         }
         if (containsAny(text, "find ", "search ", "search for", "show me", "do you have", "price of",
-                "where can i find", "ابحث", "دور على", "عندكم", "سعر")) {
+                "where can i find", "ابحث", "دور على", "عندكم", "هل فيه", "هل في", "هل يوجد",
+                "فيه ", "عاوز", "عايز", "عايزة", "محتاج", "محتاجة", "هات", "جيب",
+                "ألاقي", "الاقي", "متوفر", "موجود", "سعر")) {
             return AiChatIntent.PRODUCT_SEARCH;
         }
         return AiChatIntent.GENERAL;

@@ -1,5 +1,6 @@
 package com.example.dawanow.aichat;
 
+import com.example.dawanow.aichat.dto.AiChatCard;
 import com.example.dawanow.aichat.dto.AiChatMessage;
 import com.example.dawanow.aichat.dto.AiChatRequest;
 import com.example.dawanow.aichat.dto.AiChatResponse;
@@ -61,18 +62,14 @@ public class AiChatService {
 
     private AiChatResponse process(AiChatRequest request, MultipartFile image) {
         String traceId = UUID.randomUUID().toString();
-        String language = normalizeLanguage(request.language());
+        String language = resolveLanguage(request.language(), request.message());
         validateCoordinates(request.latitude(), request.longitude());
         List<AiChatMessage> history = boundedHistory(request.history());
         boolean hasImage = image != null && !image.isEmpty();
         AiChatIntent classifiedIntent = classifyIntent(request.message(), hasImage);
         AiChatRoute route = modelRouter.route(request.message(), hasImage, classifiedIntent);
-
-        if (hasImage) {
-            return processImage(request, image, route, language, history, traceId);
-        }
-
         SafetyAssessment safety = assessSafety(request.message(), route);
+
         if (!safety.allowed()) {
             AiChatToolResult safetyTools = safety.emergency()
                     ? toolRegistry.emergency()
@@ -81,6 +78,10 @@ public class AiChatService {
                     safetyReply(language, safety.emergency()), route.intent(), route.modelId(),
                     "NOT_CALLED", safetyTools, traceId
             );
+        }
+
+        if (hasImage) {
+            return processImage(request, image, route, language, history, safety.emergency(), traceId);
         }
 
         AiChatToolResult toolResult = toolRegistry.resolve(
@@ -111,6 +112,7 @@ public class AiChatService {
             }
         }
 
+        reply = groundProductReply(route.intent(), toolResult, reply, language);
         if (safety.emergency()) {
             reply = emergencyPrefix(language) + reply;
         }
@@ -123,6 +125,7 @@ public class AiChatService {
             AiChatRoute route,
             String language,
             List<AiChatMessage> history,
+            boolean emergency,
             String traceId
     ) {
         byte[] imageBytes = validateAndReadImage(image);
@@ -150,7 +153,7 @@ public class AiChatService {
                 providerStatus = exception.code();
             }
         }
-        if (modelRouter.isEmergency(request.message())) {
+        if (emergency) {
             toolResult = toolResult.merge(toolRegistry.emergency());
             reply = emergencyPrefix(language) + reply;
         }
@@ -169,7 +172,10 @@ public class AiChatService {
             JsonNode root = objectMapper.readTree(stripCodeFence(gatewayClient.classifyIntent(message)));
             JsonNode intent = root.get("intent");
             if (intent != null && intent.isTextual()) {
-                return AiChatIntent.valueOf(intent.textValue().trim().toUpperCase(Locale.ROOT));
+                AiChatIntent classified = AiChatIntent.valueOf(
+                        intent.textValue().trim().toUpperCase(Locale.ROOT)
+                );
+                return fallback != AiChatIntent.GENERAL ? fallback : classified;
             }
         } catch (AiChatProviderException | JsonProcessingException | IllegalArgumentException ignored) {
             // Deterministic local routing remains available if classification fails.
@@ -190,9 +196,9 @@ public class AiChatService {
                 return new SafetyAssessment(allowed.booleanValue(), localEmergency || emergency.booleanValue());
             }
         } catch (AiChatProviderException | JsonProcessingException ignored) {
-            // The conservative local medical policy is still enforced in the generation prompt.
+            // Safety-relevant requests fail closed when the external safeguard is unavailable or malformed.
         }
-        return new SafetyAssessment(true, localEmergency);
+        return new SafetyAssessment(false, localEmergency);
     }
 
     private AiChatResponse response(
@@ -363,6 +369,17 @@ public class AiChatService {
         return normalized;
     }
 
+    private String resolveLanguage(String requestedLanguage, String message) {
+        String normalized = normalizeLanguage(requestedLanguage);
+        return containsArabic(message) ? "ar" : normalized;
+    }
+
+    private boolean containsArabic(String value) {
+        return value != null && value.codePoints()
+                .anyMatch(codePoint -> Character.UnicodeScript.of(codePoint)
+                        == Character.UnicodeScript.ARABIC);
+    }
+
     private void validateCoordinates(Double latitude, Double longitude) {
         if ((latitude == null) != (longitude == null)) {
             throw new IllegalArgumentException("Latitude and longitude must be supplied together");
@@ -384,6 +401,103 @@ public class AiChatService {
                     : "Please share your location to search for nearby pharmacies.";
         }
         return unavailableReply(language);
+    }
+
+    private String groundProductReply(
+            AiChatIntent intent,
+            AiChatToolResult result,
+            String reply,
+            String language
+    ) {
+        if (intent != AiChatIntent.PRODUCT_SEARCH && intent != AiChatIntent.PRODUCT_INFORMATION) {
+            return reply;
+        }
+
+        long verifiedProducts = result.cards().stream()
+                .filter(card -> "PRODUCT".equals(card.type()))
+                .count();
+        boolean arabic = "ar".equals(language);
+        if (verifiedProducts == 0) {
+            return arabic
+                    ? "لم أجد منتجات مطابقة وموثقة في كتالوج Medsy."
+                    : "I couldn't find any verified matching products in Medsy's catalog.";
+        }
+        if (intent == AiChatIntent.PRODUCT_SEARCH) {
+            return groundedProductSearchReply(result, verifiedProducts, language);
+        }
+        if (!contradictsVerifiedProducts(reply)) {
+            return reply;
+        }
+        return arabic
+                ? "وجدت " + verifiedProducts + " من المنتجات المطابقة والموثقة في Medsy. راجع بطاقات المنتجات بالأسفل."
+                : "I found " + verifiedProducts
+                + " verified matching " + (verifiedProducts == 1 ? "product" : "products")
+                + " in Medsy. See the product cards below.";
+    }
+
+    private String groundedProductSearchReply(
+            AiChatToolResult result,
+            long verifiedProducts,
+            String language
+    ) {
+        Object queryValue = result.promptData().get("productQuery");
+        String query = queryValue instanceof String value && StringUtils.hasText(value)
+                ? value.trim()
+                : "";
+        boolean singleExactMatch = verifiedProducts == 1 && StringUtils.hasText(query)
+                && result.cards().stream()
+                .filter(card -> "PRODUCT".equals(card.type()))
+                .anyMatch(card -> exactProductNameMatch(card, query));
+        String quotedQuery = StringUtils.hasText(query) ? " '" + query + "'" : "";
+
+        if ("ar".equals(language)) {
+            if (singleExactMatch) {
+                return "وجدت منتجًا واحدًا مطابقًا تمامًا لاسم" + quotedQuery
+                        + ". راجع بطاقة المنتج بالأسفل.";
+            }
+            if (verifiedProducts == 1) {
+                return "وجدت منتجًا واحدًا موثقًا ذا صلة بالبحث" + quotedQuery
+                        + ". راجع بطاقة المنتج بالأسفل.";
+            }
+            return "وجدت " + verifiedProducts + " منتجات موثقة مطابقة للبحث" + quotedQuery
+                    + ". راجع بطاقات المنتجات بالأسفل.";
+        }
+
+        if (singleExactMatch) {
+            return "One verified product exactly matches" + quotedQuery
+                    + ". See the product card below.";
+        }
+        if (verifiedProducts == 1) {
+            return "I found 1 related verified product for" + quotedQuery
+                    + ". See the product card below.";
+        }
+        return "I found " + verifiedProducts + " verified products matching" + quotedQuery
+                + ". See the product cards below.";
+    }
+
+    private boolean exactProductNameMatch(AiChatCard card, String query) {
+        Object productName = card.data().get("productName");
+        return productName instanceof String value && value.trim().equalsIgnoreCase(query);
+    }
+
+    private boolean contradictsVerifiedProducts(String reply) {
+        String normalized = reply == null ? "" : reply.toLowerCase(Locale.ROOT);
+        return List.of(
+                "no product",
+                "no matching",
+                "not found",
+                "could not find",
+                "couldn't find",
+                "cannot find",
+                "unavailable",
+                "not available",
+                "غير متاح",
+                "غير متوفر",
+                "لا يوجد",
+                "لم أجد",
+                "لا تتوفر",
+                "غير موجود"
+        ).stream().anyMatch(normalized::contains);
     }
 
     private String unavailableReply(String language) {

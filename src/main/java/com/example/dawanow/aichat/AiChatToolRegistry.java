@@ -35,7 +35,22 @@ import org.springframework.util.StringUtils;
 public class AiChatToolRegistry {
 
     private static final int MAX_RESULTS = 5;
+    private static final int MAX_SEARCH_CANDIDATES = 5;
+    private static final int CATALOG_SEARCH_PAGE_SIZE = 50;
     private static final double NEARBY_RADIUS_KM = 10.0;
+    private static final Set<String> PRODUCT_QUERY_STOP_WORDS = Set.of(
+            "a", "an", "any", "can", "could", "for", "me", "please", "some", "the", "you",
+            "details", "information", "now", "today",
+            "لو", "سمحت", "فضلك", "من"
+    );
+    private static final Map<String, String> ARABIC_PRODUCT_ALIASES = Map.ofEntries(
+            Map.entry("بنادول", "بانادول"),
+            Map.entry("باندول", "بانادول"),
+            Map.entry("اكسترا", "إيكسترا"),
+            Map.entry("إكسترا", "إيكسترا"),
+            Map.entry("بروفن", "بروفين"),
+            Map.entry("برفين", "بروفين")
+    );
 
     private final ProductService productService;
     private final PharmacyRepository pharmacyRepository;
@@ -65,7 +80,7 @@ public class AiChatToolRegistry {
             Double longitude
     ) {
         return switch (intent) {
-            case PRODUCT_SEARCH, PRODUCT_INFORMATION -> searchProducts(extractProductQuery(message), language);
+            case PRODUCT_SEARCH, PRODUCT_INFORMATION -> searchProductsFromMessage(message, language);
             case NEARBY_PHARMACY -> nearbyPharmacies(latitude, longitude);
             case ORDER_STATUS -> orderStatus(false, language);
             case REORDER -> orderStatus(true, language);
@@ -125,11 +140,26 @@ public class AiChatToolRegistry {
                     List.of(), List.of(), List.of(), Map.of("productSearch", "A product name is required")
             );
         }
-        List<ProductResponse> products = productService.searchProducts(
+        List<ProductResponse> matches = productService.searchProducts(
                 query,
                 language,
-                PageRequest.of(0, MAX_RESULTS, Sort.by("name"))
+                PageRequest.of(0, CATALOG_SEARCH_PAGE_SIZE, Sort.by("name"))
         ).content();
+        List<ProductResponse> productNameMatches = matches.stream()
+                .filter(product -> startsWithProductQuery(product.name(), query)
+                        || startsWithProductQuery(product.productName(), query))
+                .toList();
+        if (!productNameMatches.isEmpty()) {
+            matches = productNameMatches;
+        }
+        Map<Long, ProductResponse> uniqueProducts = new LinkedHashMap<>();
+        for (ProductResponse product : matches) {
+            uniqueProducts.putIfAbsent(product.id(), product);
+            if (uniqueProducts.size() == MAX_RESULTS) {
+                break;
+            }
+        }
+        List<ProductResponse> products = List.copyOf(uniqueProducts.values());
 
         List<AiChatCard> cards = products.stream().map(this::productCard).toList();
         List<Long> productIds = products.stream().map(ProductResponse::id).toList();
@@ -147,6 +177,22 @@ public class AiChatToolRegistry {
                 actions,
                 Map.of("productQuery", query, "products", products.stream().map(this::productPromptData).toList())
         );
+    }
+
+    private AiChatToolResult searchProductsFromMessage(String message, String language) {
+        List<String> candidates = extractProductQueries(message);
+        if (candidates.isEmpty()) {
+            return searchProducts("", language);
+        }
+
+        AiChatToolResult result = AiChatToolResult.empty();
+        for (String candidate : candidates) {
+            result = searchProducts(candidate, language);
+            if (!result.cards().isEmpty()) {
+                return result;
+            }
+        }
+        return result;
     }
 
     private AiChatToolResult nearbyPharmacies(Double latitude, Double longitude) {
@@ -336,20 +382,70 @@ public class AiChatToolRegistry {
         return Map.copyOf(data);
     }
 
-    private String extractProductQuery(String message) {
+    private List<String> extractProductQueries(String message) {
         String query = message == null ? "" : message.trim();
         query = query.replaceAll(
                 "(?i)\\s+(?:and\\s+)?(?:get|show|tell)?\\s*(?:me\\s+)?(?:the\\s+)?(?:best|lowest|cheapest)\\s+price\\b.*$",
                 " "
         );
+        query = query.replaceAll("(?i)\\b(?:ignore|disregard|forget)\\b.*$", " ");
         query = query.replaceAll(
                 "(?i)\\b(find|search(?: for)?|show me|do you have|i need|tell me about|information about|what is|price of|where can i find)\\b",
                 " "
         );
-        query = query.replaceAll("(?i)\\b(medicine|medication|product)\\b", " ");
-        query = query.replaceAll("(ابحث عن|ابحث|دور على|عندكم|سعر|معلومات عن|ما هو|ما هي)", " ");
-        query = query.replaceAll("[?!.،]+", " ").replaceAll("\\s+", " ").trim();
-        return query.length() > 120 ? query.substring(0, 120) : query;
+        query = query.replaceAll("(?i)\\b(medications|medication|medicines|medicine|products|product)\\b", " ");
+        query = query.replaceAll(
+                "(?i)\\b(?:currently\\s+)?available(?:\\s+(?:in|from|on|at)\\s+medsy)?\\b",
+                " "
+        );
+        query = query.replaceAll("(?i)\\b(?:in|from|on|at)\\s+medsy\\b", " ");
+        query = query.replaceAll("(?i)\\bmedsy\\b", " ");
+        query = query.replaceAll(
+                "(ابحث عن|دور على|اعرض لي|هل عندكم|هل يوجد|هل فيه|هل في|لو سمحت|ابحث|عندكم|عاوزة|عاوزه|عاوز|عايزة|عايز|محتاجة|محتاجه|محتاج|أحتاج|احتاج|أريد|اريد|ممكن|هات|جيب|ألاقي|الاقي|فيه|معلومات عن|ما هو|ما هي|سعر)",
+                " "
+        );
+        query = query.replaceAll("(ادوية|أدوية|دواء|منتجات|منتج|علاج)", " ");
+        query = query.replaceAll(
+                "(المتاحة|المتوفرة|المتوفر|متوفرة|متوفر|متاحة|موجودة|موجود)(?:\\s+(?:في|من|على)\\s+Medsy)?",
+                " "
+        );
+        query = query.replaceAll("(?:في|من|على)\\s+Medsy", " ");
+        query = query.replaceAll("[?؟!.،]+", " ").replaceAll("\\s+", " ").trim();
+
+        List<String> tokens = java.util.Arrays.stream(query.split("\\s+"))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .filter(token -> !PRODUCT_QUERY_STOP_WORDS.contains(token.toLowerCase(Locale.ROOT)))
+                .map(this::normalizeProductToken)
+                .toList();
+        if (tokens.isEmpty()) {
+            return List.of();
+        }
+
+        Set<String> candidates = new LinkedHashSet<>();
+        for (int length = tokens.size(); length >= 1 && candidates.size() < MAX_SEARCH_CANDIDATES; length--) {
+            for (int start = 0;
+                 start + length <= tokens.size() && candidates.size() < MAX_SEARCH_CANDIDATES;
+                 start++) {
+                String candidate = String.join(" ", tokens.subList(start, start + length));
+                candidates.add(candidate.length() > 120 ? candidate.substring(0, 120).trim() : candidate);
+            }
+        }
+        return List.copyOf(candidates);
+    }
+
+    private String normalizeProductToken(String token) {
+        return ARABIC_PRODUCT_ALIASES.getOrDefault(token, token);
+    }
+
+    private boolean startsWithProductQuery(String value, String query) {
+        if (!StringUtils.hasText(value) || !StringUtils.hasText(query)) {
+            return false;
+        }
+        String normalizedValue = value.trim().toLowerCase(Locale.ROOT);
+        String normalizedQuery = query.trim().toLowerCase(Locale.ROOT);
+        return normalizedValue.equals(normalizedQuery)
+                || normalizedValue.startsWith(normalizedQuery + " ");
     }
 
     private void validateCoordinates(double latitude, double longitude) {
