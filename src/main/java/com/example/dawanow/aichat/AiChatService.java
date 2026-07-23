@@ -84,7 +84,7 @@ public class AiChatService {
 
         if (!safety.allowed()) {
             AiChatToolResult safetyTools = safety.emergency()
-                    ? toolRegistry.emergency()
+                    ? toolRegistry.emergency(language)
                     : AiChatToolResult.empty();
             return response(
                     safetyReply(language, safety.emergency()), route.intent(), route.modelId(),
@@ -100,7 +100,7 @@ public class AiChatService {
                 route.intent(), request.message(), language, request.latitude(), request.longitude()
         );
         if (safety.emergency()) {
-            toolResult = toolResult.merge(toolRegistry.emergency());
+            toolResult = toolResult.merge(toolRegistry.emergency(language));
         }
 
         String reply;
@@ -173,7 +173,7 @@ public class AiChatService {
             }
         }
         if (emergency) {
-            toolResult = toolResult.merge(toolRegistry.emergency());
+            toolResult = toolResult.merge(toolRegistry.emergency(language));
             reply = emergencyPrefix(language) + reply;
         }
         return response(reply, route.intent(), route.modelId(), providerStatus, toolResult, traceId);

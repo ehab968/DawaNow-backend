@@ -16,6 +16,7 @@ import com.example.dawanow.service.MedicineRequestService;
 import com.example.dawanow.service.OrderService;
 import com.example.dawanow.service.ProductService;
 import java.math.BigDecimal;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -37,21 +38,16 @@ public class AiChatToolRegistry {
     private static final int MAX_RESULTS = 5;
     private static final int MAX_SEARCH_CANDIDATES = 5;
     private static final int CATALOG_SEARCH_PAGE_SIZE = 50;
+    private static final double STRONG_PRODUCT_MATCH_SCORE = 0.82;
     private static final double NEARBY_RADIUS_KM = 10.0;
     private static final Set<String> PRODUCT_QUERY_STOP_WORDS = Set.of(
-            "a", "an", "any", "can", "could", "for", "me", "please", "some", "the", "you",
-            "details", "information", "now", "today",
-            "لو", "سمحت", "فضلك", "من"
+            "a", "about", "an", "any", "are", "be", "can", "could", "definitely", "details",
+            "do", "does", "exist", "exists", "for", "give", "have", "i", "information", "is",
+            "it", "me", "my", "need", "not", "now", "of", "or", "please", "show", "some",
+            "that", "the", "this", "to", "today", "want", "with", "would", "you",
+            "أنا", "انا", "إني", "اني", "أي", "اي", "بعض", "دا", "ده", "دي", "ذلك", "عن",
+            "على", "في", "لو", "ما", "مش", "من", "هو", "هي", "هذا", "هذه", "هناك", "سمحت", "فضلك"
     );
-    private static final Map<String, String> ARABIC_PRODUCT_ALIASES = Map.ofEntries(
-            Map.entry("بنادول", "بانادول"),
-            Map.entry("باندول", "بانادول"),
-            Map.entry("اكسترا", "إيكسترا"),
-            Map.entry("إكسترا", "إيكسترا"),
-            Map.entry("بروفن", "بروفين"),
-            Map.entry("برفين", "بروفين")
-    );
-
     private final ProductService productService;
     private final PharmacyRepository pharmacyRepository;
     private final OrderService orderService;
@@ -81,56 +77,118 @@ public class AiChatToolRegistry {
     ) {
         return switch (intent) {
             case PRODUCT_SEARCH, PRODUCT_INFORMATION -> searchProductsFromMessage(message, language);
-            case NEARBY_PHARMACY -> nearbyPharmacies(latitude, longitude);
+            case NEARBY_PHARMACY -> nearbyPharmacies(latitude, longitude, language);
             case ORDER_STATUS -> orderStatus(false, language);
             case REORDER -> orderStatus(true, language);
-            case REQUEST_STATUS -> requestStatus();
-            case REMINDER -> reminder(message);
+            case REQUEST_STATUS -> requestStatus(language);
+            case REMINDER -> reminder(message, language);
             default -> AiChatToolResult.empty();
         };
     }
 
     public AiChatToolResult searchProductsByQueries(List<String> queries, String language) {
-        AiChatToolResult exactResult = AiChatToolResult.empty();
+        AiChatToolResult strongResult = AiChatToolResult.empty();
         AiChatToolResult firstFallback = AiChatToolResult.empty();
-        Set<Long> seenExact = new LinkedHashSet<>();
+        Set<Long> seenStrong = new LinkedHashSet<>();
         for (String query : queries.stream().filter(StringUtils::hasText).limit(MAX_RESULTS).toList()) {
-            String catalogQuery = normalizeImageProductQuery(query);
-            AiChatToolResult current = searchProducts(catalogQuery, language);
-            if (current.cards().isEmpty()) {
-                continue;
-            }
-            if (firstFallback.cards().isEmpty()) {
-                firstFallback = current;
+            ImageQueryMatch match = searchImageProductQuery(query, language);
+            if (firstFallback.cards().isEmpty() && !match.fallback().cards().isEmpty()) {
+                firstFallback = match.fallback();
             }
 
-            int remaining = MAX_RESULTS - exactResult.cards().size();
-            List<AiChatCard> exactCards = current.cards().stream()
-                    .filter(card -> exactImageProductMatch(card, catalogQuery))
+            int remaining = MAX_RESULTS - strongResult.cards().size();
+            List<AiChatCard> uniqueCards = match.strongCards().stream()
                     .filter(card -> {
                         Object id = card.data().get("productId");
-                        return id instanceof Long productId && seenExact.add(productId);
+                        return id instanceof Long productId && seenStrong.add(productId);
                     })
                     .limit(remaining)
                     .toList();
-            if (!exactCards.isEmpty()) {
-                exactResult = exactResult.merge(productSubset(current, exactCards));
+            if (!uniqueCards.isEmpty()) {
+                strongResult = strongResult.merge(productSubset(match.source(), uniqueCards));
             }
-            if (exactResult.cards().size() == MAX_RESULTS) {
+            if (strongResult.cards().size() == MAX_RESULTS) {
                 break;
             }
         }
-        return exactResult.cards().isEmpty() ? firstFallback : exactResult;
+        return strongResult.cards().isEmpty() ? firstFallback : strongResult;
     }
 
-    private String normalizeImageProductQuery(String query) {
+    private ImageQueryMatch searchImageProductQuery(String query, String language) {
+        String cleanQuery = cleanProductQuery(query);
+        AiChatToolResult fallback = AiChatToolResult.empty();
+        AiChatToolResult bestSource = AiChatToolResult.empty();
+        List<AiChatCard> bestCards = List.of();
+        double bestScore = -1.0;
+
+        for (String candidate : imageSearchCandidates(cleanQuery)) {
+            AiChatToolResult current = searchProducts(candidate, language);
+            if (current.cards().isEmpty()) {
+                continue;
+            }
+            if (fallback.cards().isEmpty()) {
+                fallback = current;
+            }
+
+            double candidateBest = current.cards().stream()
+                    .mapToDouble(card -> productNameSimilarity(card, cleanQuery))
+                    .max()
+                    .orElse(-1.0);
+            if (candidateBest > bestScore) {
+                bestScore = candidateBest;
+                bestSource = current;
+                double selectedScore = candidateBest;
+                bestCards = current.cards().stream()
+                        .filter(card -> Math.abs(productNameSimilarity(card, cleanQuery) - selectedScore) < 0.0001)
+                        .toList();
+            }
+            if (bestCards.stream().anyMatch(card -> isStrongProductNameMatch(card, cleanQuery))) {
+                break;
+            }
+        }
+
+        List<AiChatCard> strongCards = bestCards.stream()
+                .filter(card -> isStrongProductNameMatch(card, cleanQuery))
+                .toList();
+        return new ImageQueryMatch(bestSource, strongCards, fallback);
+    }
+
+    private List<String> imageSearchCandidates(String query) {
+        if (!StringUtils.hasText(query)) {
+            return List.of();
+        }
+        Set<String> candidates = new LinkedHashSet<>();
+        candidates.add(query);
+        List<String> tokens = java.util.Arrays.stream(query.split("\\s+"))
+                .filter(StringUtils::hasText)
+                .toList();
+        for (String token : tokens) {
+            if (candidates.size() == MAX_SEARCH_CANDIDATES) {
+                break;
+            }
+            candidates.add(token);
+        }
+        for (String token : tokens) {
+            if (candidates.size() == MAX_SEARCH_CANDIDATES) {
+                break;
+            }
+            if (token.length() >= 5) {
+                int fragmentLength = Math.max(3, token.length() - 2);
+                candidates.add(token.substring(0, fragmentLength));
+                if (candidates.size() < MAX_SEARCH_CANDIDATES) {
+                    candidates.add(token.substring(token.length() - fragmentLength));
+                }
+            }
+        }
+        return candidates.stream().limit(MAX_SEARCH_CANDIDATES).toList();
+    }
+
+    private String cleanProductQuery(String query) {
         String cleanQuery = query == null ? "" : query
                 .replaceAll("^[\\s\\\"'«»]+|[\\s\\\"'«»]+$", "")
                 .replaceAll("\\s+", " ")
                 .trim();
-        return String.join(" ", java.util.Arrays.stream(cleanQuery.split("\\s+"))
-                .map(this::normalizeProductToken)
-                .toList());
+        return cleanQuery.length() > 120 ? cleanQuery.substring(0, 120).trim() : cleanQuery;
     }
 
     private AiChatToolResult productSubset(AiChatToolResult source, List<AiChatCard> cards) {
@@ -148,28 +206,90 @@ public class AiChatToolRegistry {
         );
     }
 
-    private boolean exactImageProductMatch(AiChatCard card, String query) {
+    private boolean isStrongProductNameMatch(AiChatCard card, String query) {
         String normalizedQuery = normalizeCatalogName(query);
         Object productName = card.data().get("productName");
-        return normalizeCatalogName(card.title()).equals(normalizedQuery)
-                || productName instanceof String value
-                && normalizeCatalogName(value).equals(normalizedQuery);
+        String normalizedProductName = productName instanceof String value
+                ? normalizeCatalogName(value)
+                : "";
+        String normalizedTitle = normalizeCatalogName(card.title());
+        int distance = Math.min(
+                levenshteinDistance(normalizedQuery, normalizedProductName),
+                levenshteinDistance(normalizedQuery, normalizedTitle)
+        );
+        return distance <= 1 || productNameSimilarity(card, query) >= STRONG_PRODUCT_MATCH_SCORE;
     }
 
     private String normalizeCatalogName(String value) {
-        return value == null ? "" : value.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        if (value == null) {
+            return "";
+        }
+        return Normalizer.normalize(value, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}+", "")
+                .replace('ى', 'ي')
+                .replace('ة', 'ه')
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{L}\\p{N}]", "");
     }
 
-    public AiChatToolResult emergency() {
+    private double productNameSimilarity(AiChatCard card, String query) {
+        String normalizedQuery = normalizeCatalogName(query);
+        Object productName = card.data().get("productName");
+        double productNameScore = productName instanceof String value
+                ? similarity(normalizedQuery, normalizeCatalogName(value))
+                : 0.0;
+        return Math.max(productNameScore, similarity(normalizedQuery, normalizeCatalogName(card.title())));
+    }
+
+    private double similarity(String left, String right) {
+        int maxLength = Math.max(left.length(), right.length());
+        if (maxLength == 0) {
+            return 1.0;
+        }
+        return 1.0 - ((double) levenshteinDistance(left, right) / maxLength);
+    }
+
+    private int levenshteinDistance(String left, String right) {
+        if (!StringUtils.hasText(left)) {
+            return right.length();
+        }
+        if (!StringUtils.hasText(right)) {
+            return left.length();
+        }
+        int[] previous = new int[right.length() + 1];
+        int[] current = new int[right.length() + 1];
+        for (int column = 0; column <= right.length(); column++) {
+            previous[column] = column;
+        }
+        for (int row = 1; row <= left.length(); row++) {
+            current[0] = row;
+            for (int column = 1; column <= right.length(); column++) {
+                int substitutionCost = left.charAt(row - 1) == right.charAt(column - 1) ? 0 : 1;
+                current[column] = Math.min(
+                        Math.min(current[column - 1] + 1, previous[column] + 1),
+                        previous[column - 1] + substitutionCost
+                );
+            }
+            int[] swap = previous;
+            previous = current;
+            current = swap;
+        }
+        return previous[right.length()];
+    }
+
+    public AiChatToolResult emergency(String language) {
+        boolean arabic = "ar".equals(language);
         AiChatCard card = new AiChatCard(
                 "EMERGENCY",
-                "Emergency assistance",
-                "If this may be life-threatening, call emergency services now.",
+                arabic ? "مساعدة طارئة" : "Emergency assistance",
+                arabic
+                        ? "إذا كانت الحالة قد تهدد الحياة، اتصل بالإسعاف فورًا."
+                        : "If this may be life-threatening, call emergency services now.",
                 Map.of("phoneNumber", "123", "country", "EG")
         );
         AiChatSuggestedAction action = new AiChatSuggestedAction(
                 "CALL_EMERGENCY",
-                "Call 123",
+                arabic ? "اتصل بـ 123" : "Call 123",
                 Map.of("phoneNumber", "123"),
                 true
         );
@@ -179,6 +299,10 @@ public class AiChatToolRegistry {
                 List.of(action),
                 Map.of("emergency", true, "emergencyNumber", "123")
         );
+    }
+
+    public AiChatToolResult emergency() {
+        return emergency("en");
     }
 
     private AiChatToolResult searchProducts(String query, String language) {
@@ -192,19 +316,13 @@ public class AiChatToolRegistry {
                 language,
                 PageRequest.of(0, CATALOG_SEARCH_PAGE_SIZE, Sort.by("name"))
         ).content();
-        if (matches.isEmpty() && "ar".equalsIgnoreCase(language) && query.matches(".*[A-Za-z].*")) {
+        if (matches.isEmpty()) {
+            String alternateLanguage = "ar".equalsIgnoreCase(language) ? "en" : "ar";
             matches = productService.searchProducts(
                     query,
-                    "en",
+                    alternateLanguage,
                     PageRequest.of(0, CATALOG_SEARCH_PAGE_SIZE, Sort.by("name"))
             ).content();
-        }
-        List<ProductResponse> productNameMatches = matches.stream()
-                .filter(product -> startsWithProductQuery(product.name(), query)
-                        || startsWithProductQuery(product.productName(), query))
-                .toList();
-        if (!productNameMatches.isEmpty()) {
-            matches = productNameMatches;
         }
         Map<Long, ProductResponse> uniqueProducts = new LinkedHashMap<>();
         for (ProductResponse product : matches) {
@@ -220,7 +338,9 @@ public class AiChatToolRegistry {
         List<AiChatSuggestedAction> actions = products.stream()
                 .map(product -> new AiChatSuggestedAction(
                         "ADD_TO_CART",
-                        "Add " + product.name() + " to cart",
+                        "ar".equals(language)
+                                ? "أضف " + product.name() + " إلى السلة"
+                                : "Add " + product.name() + " to cart",
                         Map.of("productId", product.id(), "quantity", 1),
                         true
                 ))
@@ -234,22 +354,29 @@ public class AiChatToolRegistry {
     }
 
     private AiChatToolResult searchProductsFromMessage(String message, String language) {
-        List<String> candidates = extractProductQueries(message);
-        if (candidates.isEmpty()) {
+        String originalQuery = extractProductQuery(message);
+        if (!StringUtils.hasText(originalQuery)) {
             return searchProducts("", language);
         }
 
-        AiChatToolResult result = AiChatToolResult.empty();
-        for (String candidate : candidates) {
-            result = searchProducts(candidate, language);
-            if (!result.cards().isEmpty()) {
-                return result;
-            }
+        ImageQueryMatch match = searchImageProductQuery(originalQuery, language);
+        AiChatToolResult result = match.strongCards().isEmpty()
+                ? match.fallback()
+                : productSubset(match.source(), match.strongCards().stream().limit(MAX_RESULTS).toList());
+        if (result.cards().isEmpty()) {
+            return result;
         }
-        return result;
+        Map<String, Object> promptData = new LinkedHashMap<>(result.promptData());
+        promptData.put("productQuery", originalQuery);
+        return new AiChatToolResult(
+                result.cards(),
+                result.sourceProductIds(),
+                result.actions(),
+                Map.copyOf(promptData)
+        );
     }
 
-    private AiChatToolResult nearbyPharmacies(Double latitude, Double longitude) {
+    private AiChatToolResult nearbyPharmacies(Double latitude, Double longitude, String language) {
         if (latitude == null || longitude == null) {
             return new AiChatToolResult(
                     List.of(), List.of(), List.of(), Map.of("nearbyPharmacies", "Current coordinates are required")
@@ -280,14 +407,18 @@ public class AiChatToolRegistry {
             if (StringUtils.hasText(pharmacy.getPhoneNumber())) {
                 actions.add(new AiChatSuggestedAction(
                         "CALL_PHARMACY",
-                        "Call " + pharmacy.getName(),
+                        "ar".equals(language)
+                                ? "اتصل بصيدلية " + pharmacy.getName()
+                                : "Call " + pharmacy.getName(),
                         Map.of("pharmacyId", pharmacy.getId(), "phoneNumber", pharmacy.getPhoneNumber()),
                         true
                 ));
             }
             actions.add(new AiChatSuggestedAction(
                     "OPEN_DIRECTIONS",
-                    "Directions to " + pharmacy.getName(),
+                    "ar".equals(language)
+                            ? "الاتجاهات إلى صيدلية " + pharmacy.getName()
+                            : "Directions to " + pharmacy.getName(),
                     Map.of(
                             "pharmacyId", pharmacy.getId(),
                             "latitude", pharmacy.getLatitude(),
@@ -321,7 +452,7 @@ public class AiChatToolRegistry {
             orders = List.of();
         }
 
-        List<AiChatCard> cards = orders.stream().map(this::orderCard).toList();
+        List<AiChatCard> cards = orders.stream().map(order -> orderCard(order, language)).toList();
         List<AiChatSuggestedAction> actions = List.of();
         if (reorder && current instanceof Customer && !orders.isEmpty()) {
             OrderResponse latest = orders.getFirst();
@@ -333,7 +464,7 @@ public class AiChatToolRegistry {
                     .toList();
             actions = List.of(new AiChatSuggestedAction(
                     "REORDER_ITEMS",
-                    "Add previous order to cart",
+                    "ar".equals(language) ? "أضف الطلب السابق إلى السلة" : "Add previous order to cart",
                     Map.of("sourceOrderId", latest.id(), "items", items),
                     true
             ));
@@ -343,11 +474,14 @@ public class AiChatToolRegistry {
                 List.copyOf(cards),
                 List.of(),
                 actions,
-                Map.of("orders", orders.stream().map(this::orderPromptData).toList(), "reorderRequested", reorder)
+                Map.of(
+                        "orders", orders.stream().map(order -> orderPromptData(order, language)).toList(),
+                        "reorderRequested", reorder
+                )
         );
     }
 
-    private AiChatToolResult requestStatus() {
+    private AiChatToolResult requestStatus(String language) {
         User current = currentUserProvider.get();
         List<MedicineRequestResponse> requests;
         if (current instanceof Customer) {
@@ -365,7 +499,7 @@ public class AiChatToolRegistry {
         List<AiChatCard> cards = requests.stream()
                 .map(request -> new AiChatCard(
                         "MEDICINE_REQUEST",
-                        "Request #" + request.id(),
+                        "ar".equals(language) ? "طلب #" + request.id() : "Request #" + request.id(),
                         request.status().name(),
                         Map.of(
                                 "requestId", request.id(),
@@ -383,10 +517,10 @@ public class AiChatToolRegistry {
         );
     }
 
-    private AiChatToolResult reminder(String message) {
+    private AiChatToolResult reminder(String message, String language) {
         AiChatSuggestedAction action = new AiChatSuggestedAction(
                 "SET_LOCAL_REMINDER",
-                "Set reminder on this device",
+                "ar".equals(language) ? "اضبط تذكيرًا على هذا الجهاز" : "Set reminder on this device",
                 Map.of("sourceText", message),
                 true
         );
@@ -412,18 +546,23 @@ public class AiChatToolRegistry {
         return productCard(product).data();
     }
 
-    private AiChatCard orderCard(OrderResponse order) {
+    private AiChatCard orderCard(OrderResponse order, String language) {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("orderId", order.id());
         data.put("status", order.status().name());
         putIfNotNull(data, "totalPrice", order.totalPrice());
         data.put("date", order.date().toString());
         data.put("itemCount", order.items().size());
-        return new AiChatCard("ORDER", "Order #" + order.id(), order.status().name(), Map.copyOf(data));
+        return new AiChatCard(
+                "ORDER",
+                "ar".equals(language) ? "طلب #" + order.id() : "Order #" + order.id(),
+                order.status().name(),
+                Map.copyOf(data)
+        );
     }
 
-    private Map<String, Object> orderPromptData(OrderResponse order) {
-        Map<String, Object> data = new LinkedHashMap<>(orderCard(order).data());
+    private Map<String, Object> orderPromptData(OrderResponse order, String language) {
+        Map<String, Object> data = new LinkedHashMap<>(orderCard(order, language).data());
         data.put("items", order.items().stream().map(this::orderItemPromptData).toList());
         return Map.copyOf(data);
     }
@@ -436,7 +575,7 @@ public class AiChatToolRegistry {
         return Map.copyOf(data);
     }
 
-    private List<String> extractProductQueries(String message) {
+    private String extractProductQuery(String message) {
         String query = message == null ? "" : message.trim();
         query = query.replaceAll(
                 "(?i)\\s+(?:and\\s+)?(?:get|show|tell)?\\s*(?:me\\s+)?(?:the\\s+)?(?:best|lowest|cheapest)\\s+price\\b.*$",
@@ -470,36 +609,12 @@ public class AiChatToolRegistry {
                 .map(String::trim)
                 .filter(StringUtils::hasText)
                 .filter(token -> !PRODUCT_QUERY_STOP_WORDS.contains(token.toLowerCase(Locale.ROOT)))
-                .map(this::normalizeProductToken)
                 .toList();
         if (tokens.isEmpty()) {
-            return List.of();
+            return "";
         }
-
-        Set<String> candidates = new LinkedHashSet<>();
-        for (int length = tokens.size(); length >= 1 && candidates.size() < MAX_SEARCH_CANDIDATES; length--) {
-            for (int start = 0;
-                 start + length <= tokens.size() && candidates.size() < MAX_SEARCH_CANDIDATES;
-                 start++) {
-                String candidate = String.join(" ", tokens.subList(start, start + length));
-                candidates.add(candidate.length() > 120 ? candidate.substring(0, 120).trim() : candidate);
-            }
-        }
-        return List.copyOf(candidates);
-    }
-
-    private String normalizeProductToken(String token) {
-        return ARABIC_PRODUCT_ALIASES.getOrDefault(token, token);
-    }
-
-    private boolean startsWithProductQuery(String value, String query) {
-        if (!StringUtils.hasText(value) || !StringUtils.hasText(query)) {
-            return false;
-        }
-        String normalizedValue = value.trim().toLowerCase(Locale.ROOT);
-        String normalizedQuery = query.trim().toLowerCase(Locale.ROOT);
-        return normalizedValue.equals(normalizedQuery)
-                || normalizedValue.startsWith(normalizedQuery + " ");
+        String productQuery = String.join(" ", tokens);
+        return productQuery.length() > 120 ? productQuery.substring(0, 120).trim() : productQuery;
     }
 
     private void validateCoordinates(double latitude, double longitude) {
@@ -525,6 +640,13 @@ public class AiChatToolRegistry {
         if (value != null) {
             target.put(key, value);
         }
+    }
+
+    private record ImageQueryMatch(
+            AiChatToolResult source,
+            List<AiChatCard> strongCards,
+            AiChatToolResult fallback
+    ) {
     }
 }
 
