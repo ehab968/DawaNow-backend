@@ -4,6 +4,9 @@ import com.example.dawanow.aichat.dto.AiChatRequest;
 import com.example.dawanow.aichat.dto.AiChatResponse;
 import com.example.dawanow.dtos.response.ApiResponse;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Encoding;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -48,6 +51,15 @@ public class AiChatController {
             security = @SecurityRequirement(name = "basicAuth")
     )
     public ResponseEntity<ApiResponse<AiChatResponse>> chatWithImage(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    content = @Content(
+                            encoding = @Encoding(
+                                    name = "payload",
+                                    contentType = MediaType.APPLICATION_JSON_VALUE
+                            )
+                    )
+            )
+            @Parameter(description = "AI chat request JSON")
             @Valid @RequestPart("payload") AiChatRequest request,
             @RequestPart("image") MultipartFile image
     ) {
