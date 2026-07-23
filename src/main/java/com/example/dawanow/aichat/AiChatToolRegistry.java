@@ -91,26 +91,73 @@ public class AiChatToolRegistry {
     }
 
     public AiChatToolResult searchProductsByQueries(List<String> queries, String language) {
-        AiChatToolResult result = AiChatToolResult.empty();
-        Set<Long> seen = new LinkedHashSet<>();
+        AiChatToolResult exactResult = AiChatToolResult.empty();
+        AiChatToolResult firstFallback = AiChatToolResult.empty();
+        Set<Long> seenExact = new LinkedHashSet<>();
         for (String query : queries.stream().filter(StringUtils::hasText).limit(MAX_RESULTS).toList()) {
-            AiChatToolResult current = searchProducts(query, language);
-            List<AiChatCard> uniqueCards = current.cards().stream()
+            String catalogQuery = normalizeImageProductQuery(query);
+            AiChatToolResult current = searchProducts(catalogQuery, language);
+            if (current.cards().isEmpty()) {
+                continue;
+            }
+            if (firstFallback.cards().isEmpty()) {
+                firstFallback = current;
+            }
+
+            int remaining = MAX_RESULTS - exactResult.cards().size();
+            List<AiChatCard> exactCards = current.cards().stream()
+                    .filter(card -> exactImageProductMatch(card, catalogQuery))
                     .filter(card -> {
                         Object id = card.data().get("productId");
-                        return id instanceof Long productId && seen.add(productId);
+                        return id instanceof Long productId && seenExact.add(productId);
                     })
+                    .limit(remaining)
                     .toList();
-            Set<Long> uniqueIds = uniqueCards.stream()
-                    .map(card -> (Long) card.data().get("productId"))
-                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-            List<AiChatSuggestedAction> uniqueActions = current.actions().stream()
-                    .filter(action -> uniqueIds.contains(action.payload().get("productId")))
-                    .toList();
-            Map<String, Object> prompt = Map.of("imageProductMatches", uniqueCards.stream().map(AiChatCard::data).toList());
-            result = result.merge(new AiChatToolResult(uniqueCards, List.copyOf(uniqueIds), uniqueActions, prompt));
+            if (!exactCards.isEmpty()) {
+                exactResult = exactResult.merge(productSubset(current, exactCards));
+            }
+            if (exactResult.cards().size() == MAX_RESULTS) {
+                break;
+            }
         }
-        return result;
+        return exactResult.cards().isEmpty() ? firstFallback : exactResult;
+    }
+
+    private String normalizeImageProductQuery(String query) {
+        String cleanQuery = query == null ? "" : query
+                .replaceAll("^[\\s\\\"'«»]+|[\\s\\\"'«»]+$", "")
+                .replaceAll("\\s+", " ")
+                .trim();
+        return String.join(" ", java.util.Arrays.stream(cleanQuery.split("\\s+"))
+                .map(this::normalizeProductToken)
+                .toList());
+    }
+
+    private AiChatToolResult productSubset(AiChatToolResult source, List<AiChatCard> cards) {
+        Set<Long> productIds = cards.stream()
+                .map(card -> (Long) card.data().get("productId"))
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        List<AiChatSuggestedAction> actions = source.actions().stream()
+                .filter(action -> productIds.contains(action.payload().get("productId")))
+                .toList();
+        return new AiChatToolResult(
+                cards,
+                List.copyOf(productIds),
+                actions,
+                Map.of("imageProductMatches", cards.stream().map(AiChatCard::data).toList())
+        );
+    }
+
+    private boolean exactImageProductMatch(AiChatCard card, String query) {
+        String normalizedQuery = normalizeCatalogName(query);
+        Object productName = card.data().get("productName");
+        return normalizeCatalogName(card.title()).equals(normalizedQuery)
+                || productName instanceof String value
+                && normalizeCatalogName(value).equals(normalizedQuery);
+    }
+
+    private String normalizeCatalogName(String value) {
+        return value == null ? "" : value.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
     }
 
     public AiChatToolResult emergency() {

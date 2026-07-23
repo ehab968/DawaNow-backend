@@ -276,6 +276,8 @@ public class AiChatService {
                 {"reply":"clear explanation","productQueries":["catalog search phrase"]}
                 When a medicine or active ingredient is readable, productQueries MUST include its exact visible
                 name even if the reply language is different. Prefer the printed Latin brand spelling when visible.
+                For a medicine package, include only the visible brand/product name when it is readable; do not add
+                active ingredients as separate queries. For a prescription, include each separate medicine name.
                 productQueries must contain at most five names and may be empty only when no name is readable.
                 """.formatted(message, "ar".equals(language) ? "Arabic" : "English");
     }
