@@ -145,6 +145,13 @@ public class AiChatToolRegistry {
                 language,
                 PageRequest.of(0, CATALOG_SEARCH_PAGE_SIZE, Sort.by("name"))
         ).content();
+        if (matches.isEmpty() && "ar".equalsIgnoreCase(language) && query.matches(".*[A-Za-z].*")) {
+            matches = productService.searchProducts(
+                    query,
+                    "en",
+                    PageRequest.of(0, CATALOG_SEARCH_PAGE_SIZE, Sort.by("name"))
+            ).content();
+        }
         List<ProductResponse> productNameMatches = matches.stream()
                 .filter(product -> startsWithProductQuery(product.name(), query)
                         || startsWithProductQuery(product.productName(), query))

@@ -18,6 +18,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -29,6 +31,16 @@ public class AiChatService {
     private static final int MAX_IMAGE_BYTES = 10 * 1024 * 1024;
     private static final int MAX_REPLY_LENGTH = 6000;
     private static final Set<String> SUPPORTED_IMAGE_TYPES = Set.of("image/jpeg", "image/png");
+    private static final Pattern IMAGE_PRODUCT_NAME_PATTERN = Pattern.compile(
+            "(?iu)(?:اسم\\s+(?:الدواء|العلاج|المنتج)|(?:medicine|drug|product)(?:\\s+name)?|this|it|هذا)"
+                    + "[^\\r\\n،,.;!?]{0,48}?(?:هو|is|:)\\s*[\\\"'«»]?"
+                    + "([\\p{L}\\p{N}][\\p{L}\\p{N}\\s+\\-]{1,80}?)[\\\"'«»]?"
+                    + "(?=\\s*(?:[\\r\\n،,.;!?]|$))"
+    );
+    private static final Pattern ARABIC_TEXT_PATTERN = Pattern.compile("[\\p{InArabic}]");
+    private static final Pattern LATIN_PRODUCT_NAME_PATTERN = Pattern.compile(
+            "\\b[A-Za-z][A-Za-z0-9+.-]*(?:\\s+[A-Za-z0-9][A-Za-z0-9+.-]*){0,4}\\b"
+    );
 
     private final AiChatModelRouter modelRouter;
     private final AiChatGatewayClient gatewayClient;
@@ -147,6 +159,13 @@ public class AiChatService {
                 ImageAnalysis analysis = parseImageAnalysis(output);
                 reply = analysis.reply();
                 toolResult = toolRegistry.searchProductsByQueries(analysis.productQueries(), language);
+                if (toolResult.cards().isEmpty()) {
+                    toolResult = toolRegistry.searchProductsByQueries(
+                            productQueriesFromImageReply(analysis.reply()),
+                            language
+                    );
+                }
+                reply = groundImageReply(reply, toolResult, language);
                 providerStatus = "SUCCESS";
             } catch (AiChatProviderException exception) {
                 reply = unavailableReply(language);
@@ -255,7 +274,9 @@ public class AiChatService {
                 Do not invent unreadable text, dosage, or product identity. Do not diagnose or claim an order was created.
                 Return only JSON in this exact shape:
                 {"reply":"clear explanation","productQueries":["catalog search phrase"]}
-                productQueries must contain at most five visible medicine or active-ingredient names, or be empty.
+                When a medicine or active ingredient is readable, productQueries MUST include its exact visible
+                name even if the reply language is different. Prefer the printed Latin brand spelling when visible.
+                productQueries must contain at most five names and may be empty only when no name is readable.
                 """.formatted(message, "ar".equals(language) ? "Arabic" : "English");
     }
 
@@ -367,6 +388,59 @@ public class AiChatService {
             throw new IllegalArgumentException("Language must be either en or ar");
         }
         return normalized;
+    }
+
+    private List<String> productQueriesFromImageReply(String reply) {
+        if (!StringUtils.hasText(reply)) {
+            return List.of();
+        }
+
+        Set<String> queries = new LinkedHashSet<>();
+        Matcher labelledName = IMAGE_PRODUCT_NAME_PATTERN.matcher(reply);
+        while (labelledName.find() && queries.size() < 5) {
+            addImageProductQuery(queries, labelledName.group(1));
+        }
+
+        if (queries.isEmpty() && ARABIC_TEXT_PATTERN.matcher(reply).find()) {
+            Matcher latinName = LATIN_PRODUCT_NAME_PATTERN.matcher(reply);
+            while (latinName.find() && queries.size() < 5) {
+                String candidate = latinName.group().trim();
+                if (!"medsy".equalsIgnoreCase(candidate)) {
+                    addImageProductQuery(queries, candidate);
+                }
+            }
+        }
+        return List.copyOf(queries);
+    }
+
+    private void addImageProductQuery(Set<String> queries, String value) {
+        String candidate = value == null ? "" : value
+                .replaceFirst("(?iu)\\s+(?:and|which|that|وهو|وهي|والذي|والتي)\\s+.*$", "")
+                .replaceAll("^[\\s\\\"'«»]+|[\\s\\\"'«»]+$", "")
+                .replaceAll("\\s+", " ")
+                .trim();
+        if (StringUtils.hasText(candidate)) {
+            queries.add(candidate.length() > 120 ? candidate.substring(0, 120).trim() : candidate);
+        }
+    }
+
+    private String groundImageReply(String reply, AiChatToolResult result, String language) {
+        long verifiedProducts = result.cards().stream()
+                .filter(card -> "PRODUCT".equals(card.type()))
+                .count();
+        if (verifiedProducts == 0) {
+            return reply;
+        }
+        if ("ar".equals(language)) {
+            return verifiedProducts == 1
+                    ? "تم التعرف على الدواء في الصورة والعثور على منتج مطابق وموثوق في Medsy. راجع بطاقة المنتج بالأسفل."
+                    : "تم التعرف على الدواء في الصورة والعثور على " + verifiedProducts
+                    + " منتجات مطابقة وموثوقة في Medsy. راجع بطاقات المنتجات بالأسفل.";
+        }
+        return verifiedProducts == 1
+                ? "I identified the medicine in the image and found one verified matching product in Medsy. See the product card below."
+                : "I identified the medicine in the image and found " + verifiedProducts
+                + " verified matching products in Medsy. See the product cards below.";
     }
 
     private String resolveLanguage(String requestedLanguage, String message) {
