@@ -26,6 +26,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
@@ -134,6 +135,20 @@ class ItiPrescriptionAiClientTest {
                 .isInstanceOfSatisfying(PrescriptionAiUnavailableException.class, exception -> {
                     assertThat(exception.getStatus()).isEqualTo(HttpStatus.UNAUTHORIZED);
                     assertThat(exception.getMessage()).isEqualTo("The AI API key is invalid or was not accepted");
+                });
+        server.verify();
+    }
+
+    @Test
+    void mapsUnexpectedRedirectToBadGatewayWithoutTreatingItAsAiOutput() {
+        server.expect(requestTo(ENDPOINT_URL))
+                .andRespond(withStatus(HttpStatus.TEMPORARY_REDIRECT)
+                        .header(HttpHeaders.LOCATION, "http://network.example/redirect"));
+
+        assertThatThrownBy(() -> client.analyze(new byte[]{1}, "image/jpeg", "en", API_KEY))
+                .isInstanceOfSatisfying(PrescriptionAiUnavailableException.class, exception -> {
+                    assertThat(exception.getStatus()).isEqualTo(HttpStatus.BAD_GATEWAY);
+                    assertThat(exception.getMessage()).contains("redirected before it reached the provider");
                 });
         server.verify();
     }

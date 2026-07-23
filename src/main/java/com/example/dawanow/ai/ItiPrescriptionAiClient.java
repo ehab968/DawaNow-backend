@@ -18,10 +18,7 @@ import java.util.List;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.HttpStatusCode;
-import org.springframework.http.MediaType;
+import org.springframework.http.*;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -71,13 +68,35 @@ public class ItiPrescriptionAiClient implements PrescriptionAiClient {
             ObjectNode request = buildRequest(image, contentType);
             String requestBody = objectMapper.writeValueAsString(request);
             log.info("Sending ITI prescription AI request: endpointUrl={} model={} imageSize={} contentType={}", endpointUrl, model, image.length, contentType);
-            String responseBody = restClient.post()
+            log.info("ITI prescription AI request payload: {} Authorization=Bearer [REDACTED]", requestBody);
+            ResponseEntity<String> response = restClient.post()
                     .uri(endpointUrl)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
                     .contentType(MediaType.APPLICATION_JSON)
+                    .accept(MediaType.APPLICATION_JSON)
                     .body(requestBody)
                     .retrieve()
-                    .body(String.class);
+                    .toEntity(String.class);
+
+            if (response.getStatusCode().is3xxRedirection()) {
+                log.warn(
+                        "ITI prescription AI request redirected: category=unexpected-redirect status={} location={}",
+                        response.getStatusCode(),
+                        response.getHeaders().getFirst(HttpHeaders.LOCATION)
+                );
+                throw failure(HttpStatus.BAD_GATEWAY,
+                        "The AI request was redirected before it reached the provider. "
+                                + "Check that the backend can access the configured ITI endpoint without a network redirect.");
+            }
+
+            log.info(
+                    "ITI AI response: status={} contentType={} contentLength={}",
+                    response.getStatusCode(),
+                    response.getHeaders().getContentType(),
+                    response.getHeaders().getContentLength()
+            );
+
+            String responseBody = response.getBody();
             return parseResponse(responseBody == null ? null : objectMapper.readTree(responseBody));
         } catch (PrescriptionAiUnavailableException exception) {
             throw exception;
@@ -157,11 +176,7 @@ public class ItiPrescriptionAiClient implements PrescriptionAiClient {
 
     private PrescriptionAiUnavailableException mapUpstreamHttpFailure(RestClientResponseException exception) {
         int status = exception.getStatusCode().value();
-        log.warn(
-                "ITI AI error: status={} responseBody={}",
-                status,
-                exception.getResponseBodyAsString()
-        );
+        log.warn("ITI AI error: status={}", status);
         return switch (status) {
             case 400 -> failure(HttpStatus.BAD_REQUEST,
                     "The AI provider rejected the prescription image or analysis request");
