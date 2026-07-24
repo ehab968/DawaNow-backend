@@ -40,6 +40,7 @@ public class AiChatToolRegistry {
     private static final int CATALOG_SEARCH_PAGE_SIZE = 50;
     private static final double STRONG_PRODUCT_MATCH_SCORE = 0.82;
     private static final double NEARBY_RADIUS_KM = 10.0;
+    private static final String PRODUCT_DETAILS_ENDPOINT = "/api/v1/products/%d?lang=%s";
     private static final Set<String> PRODUCT_QUERY_STOP_WORDS = Set.of(
             "a", "about", "an", "any", "are", "be", "can", "could", "definitely", "details",
             "do", "does", "exist", "exists", "for", "give", "have", "i", "information", "is",
@@ -335,16 +336,32 @@ public class AiChatToolRegistry {
 
         List<AiChatCard> cards = products.stream().map(this::productCard).toList();
         List<Long> productIds = products.stream().map(ProductResponse::id).toList();
-        List<AiChatSuggestedAction> actions = products.stream()
-                .map(product -> new AiChatSuggestedAction(
+        boolean arabic = "ar".equalsIgnoreCase(language);
+        String responseLanguage = arabic ? "ar" : "en";
+        List<AiChatSuggestedAction> actions = new ArrayList<>();
+        for (ProductResponse product : products) {
+            actions.add(new AiChatSuggestedAction(
                         "ADD_TO_CART",
-                        "ar".equals(language)
+                        arabic
                                 ? "أضف " + product.name() + " إلى السلة"
                                 : "Add " + product.name() + " to cart",
                         Map.of("productId", product.id(), "quantity", 1),
                         true
-                ))
-                .toList();
+            ));
+            actions.add(new AiChatSuggestedAction(
+                    "VIEW_PRODUCT_DETAILS",
+                    arabic
+                            ? "اعرض تفاصيل " + product.name()
+                            : "View " + product.name() + " details",
+                    Map.of(
+                            "productId", product.id(),
+                            "method", "GET",
+                            "endpoint", PRODUCT_DETAILS_ENDPOINT.formatted(product.id(), responseLanguage),
+                            "language", responseLanguage
+                    ),
+                    false
+            ));
+        }
         return new AiChatToolResult(
                 cards,
                 productIds,
