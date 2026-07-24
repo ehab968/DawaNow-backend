@@ -57,7 +57,7 @@ public class AiChatHistoryService {
     public AiChatHistoryPage history(User user, int requestedPage, int requestedSize) {
         int pageNumber = Math.max(requestedPage, 0);
         int pageSize = Math.min(Math.max(requestedSize, 1), 100);
-        Page<AiChatHistoryMessage> page = repository.findByUserIdOrderByCreatedAtDesc(
+        Page<AiChatHistoryMessage> page = repository.findByUserIdOrderByCreatedAtDescIdDesc(
                 user.getId(),
                 PageRequest.of(pageNumber, pageSize)
         );
