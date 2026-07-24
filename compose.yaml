@@ -27,6 +27,7 @@ services:
       DB_PASSWORD: ${MYSQL_PASSWORD:-dawanow}
       JPA_DDL_AUTO: ${JPA_DDL_AUTO:-update}
       PRODUCT_IMPORT_ENABLED: "true"
+      FIREBASE_ENABLED: ${FIREBASE_ENABLED:-false}
       SBG_API_KEY: ${SBG_API_KEY:-}
       AI_CHAT_GATEWAY_BASE_URL: ${AI_CHAT_GATEWAY_BASE_URL:-http://apiaccess.iti.net.eg/api/v1}
       AI_CHAT_MODEL_HAIKU: ${AI_CHAT_MODEL_HAIKU:-us.meta.llama3-3-70b-instruct-v1:0}

@@ -11,6 +11,7 @@ import com.google.firebase.messaging.Notification;
 import com.google.firebase.messaging.SendResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -29,20 +30,26 @@ public class FcmClient {
 
     private static final int MAX_TOKENS_PER_BATCH = 500;
 
-    private final FirebaseMessaging firebaseMessaging;
+    private final ObjectProvider<FirebaseMessaging> firebaseMessagingProvider;
 
     public DispatchResult send(List<DeviceToken> tokens, String title, String body,
                                Map<String, String> dataPayload) {
         DispatchResult result = new DispatchResult();
+        FirebaseMessaging firebaseMessaging = firebaseMessagingProvider.getIfAvailable();
+        if (firebaseMessaging == null) {
+            log.info("Firebase is disabled; skipping delivery to {} device token(s)", tokens.size());
+            result.transientFailures.addAll(tokens);
+            return result;
+        }
 
         for (int i = 0; i < tokens.size(); i += MAX_TOKENS_PER_BATCH) {
             List<DeviceToken> batch = tokens.subList(i, Math.min(i + MAX_TOKENS_PER_BATCH, tokens.size()));
-            dispatchBatch(batch, title, body, dataPayload, result);
+            dispatchBatch(firebaseMessaging, batch, title, body, dataPayload, result);
         }
         return result;
     }
 
-    private void dispatchBatch(List<DeviceToken> batch, String title, String body,
+    private void dispatchBatch(FirebaseMessaging firebaseMessaging, List<DeviceToken> batch, String title, String body,
                                Map<String, String> dataPayload, DispatchResult result) {
         MulticastMessage message = MulticastMessage.builder()
                 .addAllTokens(batch.stream().map(DeviceToken::getFcmToken).toList())
@@ -89,15 +96,19 @@ public class FcmClient {
 
     public DryRunResult sendDryRun(List<String> tokens, String title, String body) {
         DryRunResult result = new DryRunResult();
+        FirebaseMessaging firebaseMessaging = firebaseMessagingProvider.getIfAvailable();
+        if (firebaseMessaging == null) {
+            throw new IllegalStateException("Firebase is disabled; dry-run delivery is unavailable");
+        }
 
         for (int i = 0; i < tokens.size(); i += MAX_TOKENS_PER_BATCH) {
             List<String> batch = tokens.subList(i, Math.min(i + MAX_TOKENS_PER_BATCH, tokens.size()));
-            dryRunBatch(batch, title, body, result);
+            dryRunBatch(firebaseMessaging, batch, title, body, result);
         }
         return result;
     }
 
-    private void dryRunBatch(List<String> batch, String title, String body, DryRunResult result) {
+    private void dryRunBatch(FirebaseMessaging firebaseMessaging, List<String> batch, String title, String body, DryRunResult result) {
         MulticastMessage message = MulticastMessage.builder()
                 .addAllTokens(batch)
                 .setNotification(Notification.builder()
