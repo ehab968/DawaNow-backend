@@ -2,6 +2,7 @@ package com.example.dawanow.aichat;
 
 import com.example.dawanow.aichat.dto.AiChatCard;
 import com.example.dawanow.aichat.dto.AiChatMessage;
+import com.example.dawanow.aichat.dto.AiChatHistoryPage;
 import com.example.dawanow.aichat.dto.AiChatRequest;
 import com.example.dawanow.aichat.dto.AiChatResponse;
 import com.example.dawanow.entity.User;
@@ -47,6 +48,7 @@ public class AiChatService {
     private final AiChatToolRegistry toolRegistry;
     private final AiChatProperties properties;
     private final CurrentUserProvider currentUserProvider;
+    private final AiChatHistoryService historyService;
     private final ObjectMapper objectMapper;
 
     public AiChatService(
@@ -54,30 +56,47 @@ public class AiChatService {
             AiChatGatewayClient gatewayClient,
             AiChatToolRegistry toolRegistry,
             AiChatProperties properties,
-            CurrentUserProvider currentUserProvider
+            CurrentUserProvider currentUserProvider,
+            AiChatHistoryService historyService
     ) {
         this.modelRouter = modelRouter;
         this.gatewayClient = gatewayClient;
         this.toolRegistry = toolRegistry;
         this.properties = properties;
         this.currentUserProvider = currentUserProvider;
+        this.historyService = historyService;
         this.objectMapper = new ObjectMapper();
     }
 
     public AiChatResponse chat(AiChatRequest request) {
-        return process(request, null);
+        AiChatResponse response = process(request, null);
+        historyService.saveExchange(currentUserProvider.get(), request, false, response);
+        return response;
     }
 
     public AiChatResponse chat(AiChatRequest request, MultipartFile image) {
-        return process(request, image);
+        AiChatResponse response = process(request, image);
+        historyService.saveExchange(currentUserProvider.get(), request, image != null && !image.isEmpty(), response);
+        return response;
+    }
+
+    public AiChatHistoryPage history(int page, int size) {
+        return historyService.history(currentUserProvider.get(), page, size);
+    }
+
+    public void clearHistory() {
+        historyService.clear(currentUserProvider.get());
     }
 
     private AiChatResponse process(AiChatRequest request, MultipartFile image) {
         String traceId = UUID.randomUUID().toString();
+        boolean hasImage = image != null && !image.isEmpty();
+        if (!hasImage && !StringUtils.hasText(request.message())) {
+            throw new IllegalArgumentException("AI chat message is required when no image is attached");
+        }
         String language = resolveLanguage(request.language(), request.message());
         validateCoordinates(request.latitude(), request.longitude());
         List<AiChatMessage> history = boundedHistory(request.history());
-        boolean hasImage = image != null && !image.isEmpty();
         AiChatIntent classifiedIntent = classifyIntent(request.message(), hasImage);
         AiChatRoute route = modelRouter.route(request.message(), hasImage, classifiedIntent);
         SafetyAssessment safety = assessSafety(request.message(), route);

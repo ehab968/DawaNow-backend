@@ -32,6 +32,7 @@ class AiChatServiceTest {
     private AiChatGatewayClient gatewayClient;
     private AiChatToolRegistry toolRegistry;
     private CurrentUserProvider currentUserProvider;
+    private AiChatHistoryService historyService;
     private AiChatService service;
     private AiChatProperties properties;
 
@@ -41,6 +42,7 @@ class AiChatServiceTest {
         gatewayClient = mock(AiChatGatewayClient.class);
         toolRegistry = mock(AiChatToolRegistry.class);
         currentUserProvider = mock(CurrentUserProvider.class);
+        historyService = mock(AiChatHistoryService.class);
 
         User user = new User();
         user.setRole(UserRole.CUSTOMER);
@@ -79,7 +81,8 @@ class AiChatServiceTest {
                 gatewayClient,
                 toolRegistry,
                 selectedProperties,
-                currentUserProvider
+                currentUserProvider,
+                historyService
         );
     }
 
