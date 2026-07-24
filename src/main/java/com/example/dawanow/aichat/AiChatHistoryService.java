@@ -20,11 +20,10 @@ import org.springframework.transaction.annotation.Transactional;
 public class AiChatHistoryService {
 
     private final AiChatHistoryRepository repository;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public AiChatHistoryService(AiChatHistoryRepository repository, ObjectMapper objectMapper) {
+    public AiChatHistoryService(AiChatHistoryRepository repository) {
         this.repository = repository;
-        this.objectMapper = objectMapper;
     }
 
     @Transactional
