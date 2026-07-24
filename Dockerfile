@@ -4,10 +4,10 @@ WORKDIR /workspace
 
 COPY .mvn/ .mvn/
 COPY mvnw pom.xml ./
-RUN ./mvnw dependency:go-offline -B
+RUN sh mvnw dependency:go-offline -B
 
 COPY src/ src/
-RUN ./mvnw package -DskipTests -B
+RUN sh mvnw package -DskipTests -B
 
 FROM eclipse-temurin:21-jre
 
